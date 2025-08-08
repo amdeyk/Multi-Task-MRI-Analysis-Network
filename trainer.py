@@ -1,16 +1,25 @@
-import numpy as np
+from __future__ import annotations
+
+import torch
+from torch import Tensor, nn
 from typing import Sequence
 
 
-def train_one_epoch(model, data: Sequence[dict[str, np.ndarray]]) -> float:
+def train_one_epoch(model: nn.Module, data: Sequence[dict[str, Tensor]]) -> float:
     """Very small dummy training loop used for examples."""
+
     loss = 0.0
+    model.train()
     for batch in data:
-        out = model.forward(batch["mri"][None])
-        loss += float(np.mean(out["classification"]))
+        mri = torch.as_tensor(batch["mri"][None], dtype=torch.float32)
+        out = model(mri)
+        loss += float(out["classification"].mean())
     return loss / max(len(data), 1)
 
 
-def validate(model, data: Sequence[dict[str, np.ndarray]]) -> float:
+def validate(model: nn.Module, data: Sequence[dict[str, Tensor]]) -> float:
     """Dummy validation pass."""
-    return train_one_epoch(model, data)
+
+    model.eval()
+    with torch.no_grad():
+        return train_one_epoch(model, data)

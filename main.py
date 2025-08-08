@@ -1,4 +1,3 @@
-import numpy as np
 from multitask_net import MultiTaskMRINet
 from data_loader import get_samples
 from trainer import train_one_epoch, validate
