@@ -1,20 +1,18 @@
-import numpy as np
+"""Prediction utilities for the MRI network."""
+
+from __future__ import annotations
+
+import torch
+from torch import Tensor, nn
 
 
-def predict(model, mri_vol: np.ndarray) -> dict[str, np.ndarray]:
+def predict(model: nn.Module, mri_vol: Tensor) -> dict[str, Tensor]:
     """Run a forward pass and apply basic activations."""
-    outputs = model.forward(mri_vol)
-    outputs["segmentation"] = softmax(outputs["segmentation"], axis=-1)
-    outputs["classification"] = sigmoid(outputs["classification"])
-    outputs["edge"] = sigmoid(outputs["edge"])
-    outputs["tumor"] = softmax(outputs["tumor"], axis=-1)
+
+    mri_vol = torch.as_tensor(mri_vol, dtype=torch.float32)
+    outputs = model(mri_vol)
+    outputs["segmentation"] = torch.softmax(outputs["segmentation"], dim=-1)
+    outputs["classification"] = torch.sigmoid(outputs["classification"])
+    outputs["edge"] = torch.sigmoid(outputs["edge"])
+    outputs["tumor"] = torch.softmax(outputs["tumor"], dim=-1)
     return outputs
-
-
-def softmax(x: np.ndarray, axis: int = -1) -> np.ndarray:
-    e = np.exp(x - np.max(x, axis=axis, keepdims=True))
-    return e / np.sum(e, axis=axis, keepdims=True)
-
-
-def sigmoid(x: np.ndarray) -> np.ndarray:
-    return 1 / (1 + np.exp(-x))

@@ -1,24 +1,28 @@
-import numpy as np
+"""Kolmogorov–Arnold Network (KAN) heads implemented in PyTorch."""
+
+from __future__ import annotations
+
+import torch
+from torch import Tensor, nn
 
 try:  # pragma: no cover - optional dependency
     from kan import KANLinear  # type: ignore
 except Exception:  # pragma: no cover - fall back to simple linear layer
-    class KANLinear:
-        def __init__(self, in_dim: int, out_dim: int) -> None:
-            self.weight = np.random.randn(in_dim, out_dim).astype(np.float32)
-            self.bias = np.zeros(out_dim, dtype=np.float32)
+    KANLinear = None
 
-        def __call__(self, x: np.ndarray) -> np.ndarray:
-            return x @ self.weight + self.bias
 
-class SOTAKANHead:
-    """Simple wrapper around ``KANLinear`` or a NumPy fallback."""
+class SOTAKANHead(nn.Module):
+    """Simple wrapper around ``KANLinear`` or a PyTorch linear fallback."""
 
     def __init__(self, in_dim: int, out_dim: int) -> None:
-        self.kan = KANLinear(in_dim, out_dim)
+        super().__init__()
+        if KANLinear is not None:  # pragma: no cover - optional path
+            self.linear = KANLinear(in_dim, out_dim)
+        else:
+            self.linear = nn.Linear(in_dim, out_dim)
 
-    def forward(self, x: np.ndarray) -> np.ndarray:
+    def forward(self, x: Tensor) -> Tensor:
         b, n, d = x.shape
-        flat = x.reshape(-1, d)
-        out = self.kan(flat)
-        return out.reshape(b, n, -1)
+        flat = x.view(-1, d)
+        out = self.linear(flat)
+        return out.view(b, n, -1)
