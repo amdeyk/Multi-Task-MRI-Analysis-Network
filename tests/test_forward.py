@@ -1,12 +1,16 @@
 import pathlib, sys
-import torch
+import pytest
+
+try:
+    import torch
+except Exception:  # pragma: no cover - torch may be unavailable in CI
+    torch = None
 
 sys.path.append(str(pathlib.Path(__file__).resolve().parent.parent))
 
-from multitask_net import MultiTaskMRINet
-
-
+@pytest.mark.skipif(torch is None, reason="PyTorch not installed")
 def test_forward_shapes() -> None:
+    from multitask_net import MultiTaskMRINet
     model = MultiTaskMRINet(
         in_channels=2,
         cube_size=8,
