@@ -21,3 +21,5 @@
 - Unified previously separate network implementations under a configurable
   ``BaseMRINet`` with optional advanced modules and standardised ``(B, C, D, H, W)``
   tensor shapes.
+- Introduced extensible training framework with experiment tracking, structured
+  logging, data validation utilities and model serving scaffolding.

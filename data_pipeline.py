@@ -13,6 +13,7 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 
 from config import Config
+from data_validation import validate_dataset
 
 try:  # pragma: no cover - optional dependency
     import pydicom
@@ -42,6 +43,11 @@ class MRIDataset(Dataset):
                 self.files.append(p)
             elif p.is_dir() and list(p.glob("*.dcm")):
                 self.files.append(p)
+
+        failed = validate_dataset(self.files)
+        if failed:
+            raise ValueError(f"Invalid imaging files detected: {failed}")
+
         self.compute_statistics()
 
     @lru_cache(maxsize=32)
