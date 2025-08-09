@@ -12,6 +12,7 @@ from torch import Tensor, nn
 
 from experiment_tracking import ExperimentTracker
 from monitoring import setup_logging
+from memory_manager import GPUMemoryManager
 
 
 @dataclass
@@ -28,10 +29,13 @@ class Trainer:
     scheduler: Optional[torch.optim.lr_scheduler._LRScheduler] = None
     clip_grad: float = 0.0
     tracker: Optional[ExperimentTracker] = None
+    memory_manager: Optional[GPUMemoryManager] = None
 
     def __post_init__(self) -> None:
         self.logger = logging.getLogger(__name__)
-        self.model.to(self.device)
+        if self.memory_manager is None:
+            self.memory_manager = GPUMemoryManager(self.device)
+        self.model = self.memory_manager.shard_model(self.model.to(self.device))
         if self.amp and self.scaler is None and torch.cuda.is_available():
             self.scaler = torch.cuda.amp.GradScaler()
 
@@ -43,29 +47,33 @@ class Trainer:
         self.model.train()
         self.optimizer.zero_grad(set_to_none=True)
         targets = {k: v.to(self.device) for k, v in batch.items() if k != "mri"}
-        with torch.cuda.amp.autocast(enabled=self.amp, dtype=self.amp_dtype):
-            outputs = self._forward(batch)
-            losses = self.loss_fn(outputs, targets)
-            loss = losses["total"]
-        if self.scaler is not None:
-            prev_scale = self.scaler.get_scale()
-            self.scaler.scale(loss).backward()
-            if self.clip_grad > 0:
-                self.scaler.unscale_(self.optimizer)
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.clip_grad)
-            self.scaler.step(self.optimizer)
-            self.scaler.update()
-            if self.scaler.get_scale() < prev_scale:
-                self.logger.warning("Gradient overflow detected, reducing loss scale")
-        else:
-            loss.backward()
-            if self.clip_grad > 0:
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.clip_grad)
-            self.optimizer.step()
+        try:
+            with torch.cuda.amp.autocast(enabled=self.amp, dtype=self.amp_dtype):
+                outputs = self._forward(batch)
+                losses = self.loss_fn(outputs, targets)
+                loss = losses["total"]
+            if self.scaler is not None:
+                prev_scale = self.scaler.get_scale()
+                self.scaler.scale(loss).backward()
+                if self.clip_grad > 0:
+                    self.scaler.unscale_(self.optimizer)
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.clip_grad)
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+                if self.scaler.get_scale() < prev_scale:
+                    self.logger.warning("Gradient overflow detected, reducing loss scale")
+            else:
+                loss.backward()
+                if self.clip_grad > 0:
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.clip_grad)
+                self.optimizer.step()
+        except RuntimeError as exc:  # pragma: no cover - hardware specific
+            if self.memory_manager and self.memory_manager.handle_oom(exc):
+                return self.train_step(batch)
+            raise
         if torch.cuda.is_available():  # pragma: no cover - device specific
-            self.logger.debug(
-                "mem_allocated=%d", torch.cuda.memory_allocated(self.device)
-            )
+            stats = self.memory_manager.monitor() if self.memory_manager else {}
+            self.logger.debug("mem_allocated=%d", stats.get("allocated", 0))
         return float(loss.detach())
 
     @torch.no_grad()
@@ -142,9 +150,12 @@ class TrainingManager:
                 loss = self.trainer.train_step(batch)
                 losses.append(loss)
             except RuntimeError as exc:  # pragma: no cover - hardware specific
-                if "out of memory" in str(exc).lower():
-                    self.logger.warning("OOM encountered, skipping batch")
-                    torch.cuda.empty_cache()
+                handled = (
+                    self.trainer.memory_manager.handle_oom(exc)
+                    if self.trainer.memory_manager
+                    else False
+                )
+                if handled:
                     continue
                 raise
         if self.trainer.scheduler is not None:
