@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Iterable, List
+from typing import Dict, Iterable, List
 
 import numpy as np
 
@@ -11,6 +11,10 @@ try:  # pragma: no cover - optional dependency
     import pydicom
 except Exception:  # noqa: BLE001
     pydicom = None
+
+from metadata_manager import MetadataManager
+
+_metadata_mgr = MetadataManager()
 
 
 def validate_dicom(path: Path) -> bool:
@@ -53,3 +57,8 @@ def compute_statistics(volume: np.ndarray) -> dict:
         "min": float(volume.min()),
         "max": float(volume.max()),
     }
+
+
+def validate_metadata(meta: Dict) -> bool:
+    """Validate extracted metadata using standard rules."""
+    return _metadata_mgr.validate(meta)
