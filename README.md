@@ -375,9 +375,9 @@ This project is released under the MIT License. If you use this code in your res
 ```bibtex
 @software{mri_kan_2024,
   title={MRI-KAN: Multi-Task MRI Analysis with Kolmogorov-Arnold Networks},
-  author={Your Name},
-  year={2024},
-  url={https://github.com/your-org/mri-kan}
+  author=Ambarish Dey,
+  year=2025,
+  url={https://github.com/amdeyk/Multi-Task-MRI-Analysis-Network}
 }
 ```
 
