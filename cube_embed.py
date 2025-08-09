@@ -9,6 +9,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
+from shape_utils import ensure_bcdhw
 
 
 class CubeSplitter3D(nn.Module):
@@ -51,13 +52,19 @@ class CubeSplitter3D(nn.Module):
     def forward(self, x: Union[Tensor, np.ndarray, str, Path]) -> Tensor:
         """Return embedded cubes for ``x``.
 
+        Parameters
+        ----------
+        x:
+            Input volume in ``(B, C, D, H, W)`` format.  Non-conforming inputs are
+            automatically reshaped using :func:`~shape_utils.ensure_bcdhw`.
+
         The operation is fully vectorised using :meth:`Tensor.unfold` and
         supports overlapping patches. Large volumes residing on disk can be
         passed as filenames or ``np.memmap`` instances to enable lazy loading.
         ``adaptive_batch`` processes patches in chunks based on free GPU memory.
         """
 
-        x = self._to_tensor(x)
+        x = ensure_bcdhw(self._to_tensor(x), "x")
         b, c, s, h, w = x.shape
         cs, stride = self.cube_size, self.stride
         patches = (
