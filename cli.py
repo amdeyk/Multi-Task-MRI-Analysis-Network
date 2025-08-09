@@ -15,7 +15,9 @@ from config import Config
 from optimized_network import SOTAMRINetwork
 from data_pipeline import get_dataloader, MRIDataset
 from losses import MultiTaskLoss
-from trainer import train_one_epoch, validate
+from trainer import Trainer, TrainingManager
+from experiment_tracking import ExperimentTracker
+from monitoring import setup_logging
 
 try:  # pragma: no cover - optional metrics deps
     from scipy import stats
@@ -54,6 +56,7 @@ def cli() -> None:
 def train(config, data, output, resume, gpu, mixed_precision, profile) -> None:
     """Train the MRI-KAN model."""
     console.print("[bold green]MRI-KAN Training Pipeline[/bold green]")
+    logger = setup_logging()
     cfg = Config.from_yaml(config)
     cfg.data.data_root = Path(data)
     cfg.training.mixed_precision = mixed_precision
@@ -80,52 +83,28 @@ def train(config, data, output, resume, gpu, mixed_precision, profile) -> None:
     scaler = torch.cuda.amp.GradScaler(enabled=mixed_precision)
     out_path = Path(output)
     out_path.mkdir(parents=True, exist_ok=True)
-    start_epoch = 0
-    best_loss = float("inf")
-    if resume:
-        ckpt = torch.load(resume, map_location=device)
-        model.load_state_dict(ckpt["model"])
-        optimizer.load_state_dict(ckpt["optimizer"])
-        scheduler.load_state_dict(ckpt["scheduler"])
-        if ckpt.get("scaler"):
-            scaler.load_state_dict(ckpt["scaler"])
-        start_epoch = ckpt.get("epoch", 0) + 1
-        best_loss = ckpt.get("best_loss", best_loss)
-    patience = 10
-    epochs_no_improve = 0
-    for epoch in range(start_epoch, cfg.training.epochs):
-        train_loss = train_one_epoch(
-            model,
-            train_loader,
-            optimizer,
-            loss_fn,
-            device,
-            scaler,
-            scheduler,
-            cfg.training.gradient_clip,
-        )
-        val_metrics = validate(model, val_loader, loss_fn, device)
-        console.print(
-            f"Epoch {epoch + 1}/{cfg.training.epochs}: train_loss={train_loss:.4f} val_loss={val_metrics['loss']:.4f} dice={val_metrics['dice']:.4f}"
-        )
-        state = {
-            "model": model.state_dict(),
-            "optimizer": optimizer.state_dict(),
-            "scheduler": scheduler.state_dict(),
-            "scaler": scaler.state_dict(),
-            "epoch": epoch,
-            "best_loss": best_loss,
-        }
-        torch.save(state, out_path / f"epoch_{epoch}.pt")
-        if val_metrics["loss"] < best_loss:
-            best_loss = val_metrics["loss"]
-            epochs_no_improve = 0
-            torch.save(state, out_path / "best.pt")
-        else:
-            epochs_no_improve += 1
-            if epochs_no_improve >= patience:
-                console.print("[yellow]Early stopping triggered[/yellow]")
-                break
+
+    tracker = ExperimentTracker(project="mri-kan")
+    trainer = Trainer(
+        model=model,
+        loss_fn=loss_fn,
+        optimizer=optimizer,
+        device=device,
+        scaler=scaler,
+        scheduler=scheduler,
+        clip_grad=cfg.training.gradient_clip,
+        tracker=tracker,
+    )
+    manager = TrainingManager(
+        trainer=trainer,
+        train_loader=train_loader,
+        val_loader=val_loader,
+        epochs=cfg.training.epochs,
+        out_dir=out_path,
+        patience=10,
+        tracker=tracker,
+    )
+    manager.fit(resume=resume)
 
 
 @cli.command()
