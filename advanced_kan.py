@@ -5,45 +5,81 @@ from typing import Dict
 
 import torch
 import torch.nn as nn
+from torch import Tensor
 
 
 class OptimizedKANLayer(nn.Module):
-    """Optimized KAN layer using B-spline basis functions."""
+    """KAN layer with vectorised B-spline basis functions.
 
-    def __init__(self, in_dim: int, out_dim: int, num_splines: int = 8, degree: int = 3) -> None:
+    The implementation avoids explicit Python loops over the spline bases and
+    supports learnable knot placement as well as adaptive basis function
+    selection.  It is designed to operate efficiently on batched inputs of shape
+    ``(batch, tokens, in_dim)``.
+    """
+
+    def __init__(
+        self, in_dim: int, out_dim: int, num_splines: int = 8, degree: int = 3
+    ) -> None:
         super().__init__()
         self.in_dim = in_dim
         self.out_dim = out_dim
         self.num_splines = num_splines
         self.degree = degree
-        self.control_points = nn.Parameter(torch.randn(out_dim, in_dim, num_splines) * 0.1)
-        knots = torch.linspace(-1, 1, num_splines + degree + 1)
-        self.knots = nn.Parameter(knots.expand(out_dim, in_dim, -1))
+
+        self.control_points = nn.Parameter(torch.empty(out_dim, in_dim, num_splines))
+        nn.init.xavier_uniform_(self.control_points)
+
+        raw_knots = torch.linspace(-1, 1, num_splines + degree + 1)
+        self.raw_knots = nn.Parameter(raw_knots.expand(out_dim, in_dim, -1))
+
         self.activation_weights = nn.Parameter(torch.ones(out_dim, in_dim, 4) / 4)
+        self.selector = nn.Linear(in_dim, num_splines)
+        self.regularization: Tensor | None = None
 
-    def _de_boor(self, x: torch.Tensor, knots: torch.Tensor, i: int, degree: int) -> torch.Tensor:
-        if degree == 0:
-            return ((x >= knots[..., i]) & (x < knots[..., i + 1])).float()
-        c1 = (x - knots[..., i]) / (knots[..., i + degree] - knots[..., i] + 1e-8)
-        c2 = (knots[..., i + degree + 1] - x) / (knots[..., i + degree + 1] - knots[..., i + 1] + 1e-8)
-        return c1 * self._de_boor(x, knots, i, degree - 1) + c2 * self._de_boor(x, knots, i + 1, degree - 1)
+    def _sorted_knots(self) -> torch.Tensor:
+        return torch.sort(self.raw_knots, dim=-1)[0]
 
-    def b_spline_basis(self, x: torch.Tensor, knots: torch.Tensor, degree: int) -> torch.Tensor:
-        n = knots.shape[-1] - degree - 1
-        basis = torch.zeros(*x.shape, n, device=x.device)
-        for i in range(n):
-            basis[..., i] = self._de_boor(x, knots, i, degree)
-        return basis
+    def b_spline_basis(self, x: torch.Tensor, knots: torch.Tensor) -> torch.Tensor:
+        """Vectorised Cox–de Boor recursion."""
+
+        p = self.degree
+        m = knots.shape[-1]
+        n = m - p - 1
+        x = x.unsqueeze(-1)  # (..., 1)
+        basis = ((x >= knots[..., :-1]) & (x < knots[..., 1:])).float()
+        for d in range(1, p + 1):
+            left_num = x - knots[..., : m - d - 1]
+            left_den = knots[..., d:m - 1] - knots[..., : m - d - 1]
+            right_num = knots[..., d + 1 :] - x
+            right_den = knots[..., d + 1 :] - knots[..., 1 : m - d]
+            left = left_num / (left_den + 1e-8) * basis[..., : m - d - 1]
+            right = right_num / (right_den + 1e-8) * basis[..., 1 : m - d]
+            basis = left + right
+        return basis[..., :n]
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        b, n, d = x.shape
-        x = x.unsqueeze(1).expand(-1, self.out_dim, -1, -1)
-        basis = self.b_spline_basis(x, self.knots.unsqueeze(0), self.degree)
-        out = torch.einsum("bond,ods->bons", basis, self.control_points).sum(dim=-1)
+        b, t, d = x.shape
+        knots = self._sorted_knots()  # (out_dim, in_dim, m)
+        cp = self.control_points
+
+        x_in = x.unsqueeze(2).unsqueeze(-1)  # (b, t, 1, in_dim, 1)
+        knots = knots.unsqueeze(0).unsqueeze(0)  # (1, 1, out_dim, in_dim, m)
+        basis = self.b_spline_basis(x_in, knots)  # (b, t, out_dim, in_dim, n)
+
+        gate = torch.sigmoid(self.selector(x))  # (b, t, num_splines)
+        gate = gate.unsqueeze(2).unsqueeze(3)  # (b, t, 1, 1, n)
+        basis = basis * gate
+
+        cp = cp.unsqueeze(0).unsqueeze(0)  # (1,1,out_dim,in_dim,n)
+        out = (basis * cp).sum(-1).sum(-1)  # (b, t, out_dim)
+
         acts = torch.stack(
             [torch.relu(x), torch.tanh(x), torch.sigmoid(x), x], dim=-1
         )
-        act_out = torch.einsum("bond,od4->bon", acts, self.activation_weights).sum(dim=-1)
+        act_w = self.activation_weights.unsqueeze(0).unsqueeze(0)
+        act_out = (acts.unsqueeze(2) * act_w).sum(-1).sum(-1)
+
+        self.regularization = cp.abs().mean()
         return out + 0.1 * act_out
 
 
