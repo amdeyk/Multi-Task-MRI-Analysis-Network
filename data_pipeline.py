@@ -184,7 +184,8 @@ def get_training_augmentation():
     )
 
 
-def get_dataloader(config: Config, split: str = "train") -> DataLoader:
+def get_dataloader(config: Config, split: str = "train", distributed: bool = False) -> DataLoader:
+    """Return a dataloader with optional ``DistributedSampler`` support."""
     transform = get_training_augmentation() if split == "train" else ToTensorV2()
     dataset = MRIDataset(
         root_dir=config.data.data_root / split,
@@ -192,10 +193,18 @@ def get_dataloader(config: Config, split: str = "train") -> DataLoader:
         cache_size=100,
         num_workers=config.training.num_workers,
     )
+
+    sampler = None
+    if distributed and torch.distributed.is_available() and torch.distributed.is_initialized():
+        from torch.utils.data.distributed import DistributedSampler
+
+        sampler = DistributedSampler(dataset, shuffle=(split == "train"))
+
     loader = DataLoader(
         dataset,
         batch_size=config.training.batch_size,
-        shuffle=(split == "train"),
+        shuffle=(sampler is None and split == "train"),
+        sampler=sampler,
         num_workers=config.training.num_workers,
         pin_memory=True,
         persistent_workers=True,

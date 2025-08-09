@@ -4,7 +4,7 @@ from pathlib import Path
 
 import click
 import torch
-import torch.nn as nn
+from contextlib import nullcontext
 from rich.console import Console
 from rich.progress import track
 from rich.table import Table
@@ -18,6 +18,13 @@ from losses import MultiTaskLoss
 from trainer import Trainer, TrainingManager
 from experiment_tracking import ExperimentTracker
 from monitoring import setup_logging
+from distributed_training import (
+    cleanup,
+    get_device,
+    init_distributed,
+    is_main_process,
+    wrap_model,
+)
 
 try:  # pragma: no cover - optional metrics deps
     from scipy import stats
@@ -55,24 +62,29 @@ def cli() -> None:
 @click.option("--profile/--no-profile", default=False, help="Enable profiling")
 def train(config, data, output, resume, gpu, mixed_precision, profile) -> None:
     """Train the MRI-KAN model."""
-    console.print("[bold green]MRI-KAN Training Pipeline[/bold green]")
+    rank, world_size = init_distributed(gpu)
+    device = get_device(rank)
+    if is_main_process():
+        console.print('[bold green]MRI-KAN Training Pipeline[/bold green]')
     logger = setup_logging()
     cfg = Config.from_yaml(config)
     cfg.data.data_root = Path(data)
     cfg.training.mixed_precision = mixed_precision
-    devices = [f"cuda:{i}" for i in gpu] if gpu else (["cuda"] if torch.cuda.is_available() else ["cpu"])
-    device = torch.device(devices[0])
-    with console.status("[bold blue]Initializing model..."):
-        model = SOTAMRINetwork(cfg)
-        if len(devices) > 1:
-            model = nn.DataParallel(model, device_ids=[int(d.split(":")[1]) for d in devices])
-        model = model.to(device)
-    console.print(
-        f"[green]\u2713[/green] Model initialized with {sum(p.numel() for p in model.parameters())/1e6:.2f}M parameters"
-    )
 
-    train_loader = get_dataloader(cfg, "train")
-    val_loader = get_dataloader(cfg, "val")
+    status_ctx = console.status('[bold blue]Initializing model...') if is_main_process() else nullcontext()
+    with status_ctx:
+        model = SOTAMRINetwork(cfg)
+        if world_size > 1:
+            model = wrap_model(model)
+        else:
+            model = model.to(device)
+    if is_main_process():
+        console.print(
+            f'[green]\u2713[/green] Model initialized with {sum(p.numel() for p in model.parameters())/1e6:.2f}M parameters',
+        )
+
+    train_loader = get_dataloader(cfg, 'train', distributed=world_size > 1)
+    val_loader = get_dataloader(cfg, 'val', distributed=world_size > 1)
     optimizer = torch.optim.Adam(
         model.parameters(),
         lr=cfg.training.learning_rate,
@@ -80,20 +92,19 @@ def train(config, data, output, resume, gpu, mixed_precision, profile) -> None:
     )
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, cfg.training.epochs)
     loss_fn = MultiTaskLoss(cfg.loss)
-    scaler = torch.cuda.amp.GradScaler(enabled=mixed_precision)
     out_path = Path(output)
     out_path.mkdir(parents=True, exist_ok=True)
 
-    tracker = ExperimentTracker(project="mri-kan")
+    tracker = ExperimentTracker(project='mri-kan') if is_main_process() else None
     trainer = Trainer(
         model=model,
         loss_fn=loss_fn,
         optimizer=optimizer,
         device=device,
-        scaler=scaler,
         scheduler=scheduler,
         clip_grad=cfg.training.gradient_clip,
         tracker=tracker,
+        amp=mixed_precision,
     )
     manager = TrainingManager(
         trainer=trainer,
@@ -105,6 +116,7 @@ def train(config, data, output, resume, gpu, mixed_precision, profile) -> None:
         tracker=tracker,
     )
     manager.fit(resume=resume)
+    cleanup()
 
 
 @cli.command()
