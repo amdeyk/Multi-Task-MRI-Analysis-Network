@@ -1,16 +1,21 @@
+"""Baseline multi-task MRI network wrapper.
+
+This module exposes :class:`MultiTaskMRINet`, a thin convenience wrapper around
+:class:`mri_network.BaseMRINet` configured for the lightweight architecture.  It
+maintains the original class name for backwards compatibility while delegating
+all heavy lifting to the unified implementation.
+"""
 from __future__ import annotations
 
-import torch
-from torch import Tensor, nn
-
-from differential import DifferentialFeatureExtractor
-from cube_embed import CubeSplitter3D
-from residual_transformer import ResidualTransformerBlock
-from sota_kan import SOTAKANHead
+from mri_network import BaseMRINet
 
 
-class MultiTaskMRINet(nn.Module):
-    """Minimal PyTorch implementation of the multi-task MRI network."""
+class MultiTaskMRINet(BaseMRINet):
+    """Baseline network built from :class:`BaseMRINet`.
+
+    Parameters mirror those of :class:`BaseMRINet` but default to a configuration
+    suitable for small-scale experimentation.
+    """
 
     def __init__(
         self,
@@ -19,35 +24,22 @@ class MultiTaskMRINet(nn.Module):
         embed_dim: int,
         num_heads: int,
         num_layers: int,
-        n_tasks: int,
+        n_tasks: int | None = None,
         face_embed: bool = True,
     ) -> None:
-        super().__init__()
-        self.diff_feat = DifferentialFeatureExtractor()
-        self.cube_embed = CubeSplitter3D(cube_size=cube_size, face_embed=face_embed)
-        self.transformer_layers = nn.ModuleList(
-            [ResidualTransformerBlock(embed_dim, num_heads) for _ in range(num_layers)]
+        head_channels = {"segmentation": 2, "classification": 1, "edge": 1, "tumor": 3}
+        super().__init__(
+            in_channels=in_channels,
+            cube_size=cube_size,
+            embed_dim=embed_dim,
+            num_heads=num_heads,
+            num_layers=num_layers,
+            head_channels=head_channels,
+            cube_embed_kwargs={"face_embed": face_embed},
         )
-        self.seg_head = SOTAKANHead(embed_dim, 2)
-        self.cls_head = SOTAKANHead(embed_dim, 1)
-        self.edge_head = SOTAKANHead(embed_dim, 1)
-        self.tumor_head = SOTAKANHead(embed_dim, 3)
 
-    def forward(self, x: Tensor) -> dict[str, Tensor]:
-        x = torch.as_tensor(x, dtype=torch.float32)
-        x = self.diff_feat(x)
-        x = self.cube_embed(x)
-        prev = None
-        for layer in self.transformer_layers:
-            x = layer(x, prev)
-            prev = x
-        seg = self.seg_head(x)
-        edge = self.edge_head(x)
-        tumor = self.tumor_head(x)
-        cls = self.cls_head(x.mean(dim=1, keepdim=True))
-        return {
-            "segmentation": seg,
-            "classification": cls,
-            "edge": edge,
-            "tumor": tumor,
-        }
+
+def create_multitask_net(**kwargs) -> BaseMRINet:
+    """Factory function returning :class:`MultiTaskMRINet`."""
+    return MultiTaskMRINet(**kwargs)
+

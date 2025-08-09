@@ -18,3 +18,6 @@
   and caching.
 - Added adaptive cube embedding, memory-aware chunking and gradient
   checkpointing options in transformer blocks.
+- Unified previously separate network implementations under a configurable
+  ``BaseMRINet`` with optional advanced modules and standardised ``(B, C, D, H, W)``
+  tensor shapes.

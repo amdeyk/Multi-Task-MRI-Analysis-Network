@@ -15,6 +15,15 @@ This repository implements a state-of-the-art multi-task learning framework for 
 5. **Mixture of Experts**: Conditional computation for improved efficiency
 6. **Multi-Task Loss Framework**: Uncertainty-weighted loss with advanced loss functions
 
+### Unified Network Architecture
+
+The project now exposes a single configurable backbone implemented in
+``mri_network.BaseMRINet``.  It standardises tensor shapes to ``(B, C, D, H, W)``
+throughout the pipeline and allows toggling advanced components such as
+multi-scale cube embedding, Mixture-of-Experts feed-forward layers and parallel
+KAN heads.  Use ``create_basic_net`` for lightweight experiments or
+``create_sota_net`` to enable all advanced modules.
+
 ## Detailed Component Analysis
 
 ### 1. Advanced Attention Mechanisms (`attention.py`)

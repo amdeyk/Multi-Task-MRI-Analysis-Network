@@ -8,8 +8,7 @@ import torch.nn.functional as F
 from einops import rearrange
 
 from attention import FlashAttention
-from advanced_kan import ParallelKANHead
-from differential import DifferentialFeatureExtractor
+from shape_utils import ensure_bcdhw
 
 
 class OptimizedCubeEmbedding(nn.Module):
@@ -63,6 +62,7 @@ class OptimizedCubeEmbedding(nn.Module):
         return torch.cat(outputs, dim=2)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = ensure_bcdhw(x, "x")
         b, c, d, h, w = x.shape
         pad = self.cube_size - self.stride
         if pad > 0:
@@ -164,6 +164,8 @@ class EnhancedTransformerBlock(nn.Module):
         return bool(self.checkpoint)
 
     def forward(self, x: torch.Tensor, prev_layer: Optional[torch.Tensor] = None) -> torch.Tensor:
+        if x.dim() != 3:
+            raise ValueError(f"expected (B, N, D) tensor, got {tuple(x.shape)}")
         use_ckpt = self._should_checkpoint()
 
         def attn_fn(t: torch.Tensor) -> torch.Tensor:
@@ -190,47 +192,36 @@ class EnhancedTransformerBlock(nn.Module):
         return x
 
 
-class SOTAMRINetwork(nn.Module):
-    """State-of-the-art MRI analysis network."""
+from mri_network import BaseMRINet
+
+
+class SOTAMRINetwork(BaseMRINet):
+    """State-of-the-art MRI analysis network using advanced modules."""
 
     def __init__(self, config) -> None:
-        super().__init__()
-        self.config = config
-        self.diff_extractor = DifferentialFeatureExtractor()
-        self.cube_embed = OptimizedCubeEmbedding(
+        head_channels = {"segmentation": 2, "classification": 4, "edge": 1, "tumor": 5}
+        cube_kwargs = {
+            "overlap": config.data.overlap,
+            "multi_scale": True,
+            "cube_size": config.model.cube_size,
+            "embed_dim": config.model.embed_dim,
+        }
+        trans_kwargs = {
+            "mlp_ratio": 4,
+            "dropout": config.model.dropout,
+            "use_moe": config.model.use_moe,
+            "num_experts": config.model.num_experts,
+        }
+        super().__init__(
+            in_channels=config.model.in_channels,
             cube_size=config.model.cube_size,
             embed_dim=config.model.embed_dim,
-            overlap=config.data.overlap,
-            multi_scale=True,
+            num_heads=config.model.num_heads,
+            num_layers=config.model.num_layers,
+            head_channels=head_channels,
+            cube_embed_cls=OptimizedCubeEmbedding,
+            transformer_block_cls=EnhancedTransformerBlock,
+            cube_embed_kwargs=cube_kwargs,
+            transformer_kwargs=trans_kwargs,
+            parallel_heads=True,
         )
-        self.transformers = nn.ModuleList(
-            [
-                EnhancedTransformerBlock(
-                    config.model.embed_dim,
-                    config.model.num_heads,
-                    dropout=config.model.dropout,
-                    use_moe=config.model.use_moe,
-                    num_experts=config.model.num_experts,
-                )
-                for _ in range(config.model.num_layers)
-            ]
-        )
-        self.heads = ParallelKANHead(
-            config.model.embed_dim,
-            {
-                "segmentation": 2,
-                "classification": 4,
-                "edge": 1,
-                "tumor": 5,
-            },
-        )
-
-    def forward(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:
-        x = self.diff_extractor(x)
-        x = self.cube_embed(x)
-        prev = None
-        for layer in self.transformers:
-            x = layer(x, prev)
-            prev = x
-        outputs = self.heads(x)
-        return outputs

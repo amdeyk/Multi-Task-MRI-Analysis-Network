@@ -80,6 +80,8 @@ class ResidualTransformerBlock(nn.Module):
             Optional attention mask broadcastable to ``(batch, seq_len, seq_len)``.
         """
 
+        if x.dim() != 3:
+            raise ValueError(f"expected (B, N, D) tensor, got {tuple(x.shape)}")
         residual = x if prev_residual is None else prev_residual
         q = self.norm1(x)
         attn_out, _ = self.attn(q, q, q, attn_mask=attn_mask)

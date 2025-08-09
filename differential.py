@@ -7,6 +7,7 @@ from typing import Dict, Tuple
 import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
+from shape_utils import ensure_bcdhw
 
 
 class DifferentialFeatureExtractor(nn.Module):
@@ -43,10 +44,11 @@ class DifferentialFeatureExtractor(nn.Module):
         Parameters
         ----------
         x:
-            Input tensor of shape ``(B, C, S, H, W)``.
+            Input tensor.  ``x`` is converted to ``float32`` and reshaped to
+            ``(B, C, D, H, W)`` if necessary.
         """
 
-        x = torch.as_tensor(x, dtype=torch.float32)
+        x = ensure_bcdhw(torch.as_tensor(x, dtype=torch.float32), "x")
         b, c, s, h, w = x.shape
 
         diff_slices = x.new_zeros(b, c, s, h, w)
