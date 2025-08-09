@@ -13,9 +13,15 @@ from differential import DifferentialFeatureExtractor
 
 
 class OptimizedCubeEmbedding(nn.Module):
-    """3D cube embedding with optional multi-scale overlap."""
+    """3D cube embedding with adaptive batching and overlap handling."""
 
-    def __init__(self, cube_size: int = 8, embed_dim: int = 128, overlap: float = 0.25, multi_scale: bool = True) -> None:
+    def __init__(
+        self,
+        cube_size: int = 8,
+        embed_dim: int = 128,
+        overlap: float = 0.25,
+        multi_scale: bool = True,
+    ) -> None:
         super().__init__()
         self.cube_size = cube_size
         self.stride = int(cube_size * (1 - overlap))
@@ -34,23 +40,53 @@ class OptimizedCubeEmbedding(nn.Module):
             )
         self.pos_embed = nn.Parameter(torch.randn(1, 1000, embed_dim) * 0.02)
 
+    def _free_mem(self, device: torch.device) -> int:
+        if device.type == "cuda":
+            free, _ = torch.cuda.mem_get_info(device)
+            return int(free)
+        return int(1e12)
+
+    def _apply_layer(self, layer: nn.Module, x: torch.Tensor) -> torch.Tensor:
+        """Apply convolution in depth chunks based on free memory."""
+
+        b, c, d, h, w = x.shape
+        device = x.device
+        bytes_per_voxel = x.element_size() * layer.out_channels
+        free_mem = self._free_mem(device) * 0.8
+        max_depth = max(1, int(free_mem / (bytes_per_voxel * h * w * b)))
+
+        outputs = []
+        for start in range(0, d, max_depth):
+            chunk = x[:, :, start : start + max_depth]
+            out = layer(chunk)
+            outputs.append(out)
+        return torch.cat(outputs, dim=2)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         b, c, d, h, w = x.shape
+        pad = self.cube_size - self.stride
+        if pad > 0:
+            x = F.pad(x, (0, pad, 0, pad, 0, pad))
+
         feats = []
         for layer in self.embeddings:
-            emb = layer(x.reshape(b * c, 1, d, h, w))
+            emb = self._apply_layer(layer, x.reshape(b * c, 1, x.shape[2], x.shape[3], x.shape[4]))
             emb = rearrange(emb, "(b c) e d h w -> b c (d h w) e", b=b, c=c)
             feats.append(emb)
+
         if self.multi_scale:
             target = feats[0].shape[2]
             aligned = []
             for emb in feats:
                 if emb.shape[2] != target:
-                    emb = F.interpolate(emb.transpose(-1, -2), size=target, mode="linear").transpose(-1, -2)
+                    emb = F.interpolate(
+                        emb.transpose(-1, -2), size=target, mode="linear"
+                    ).transpose(-1, -2)
                 aligned.append(emb)
             x = torch.cat(aligned, dim=-1)
         else:
             x = feats[0]
+
         x = x + self.pos_embed[:, : x.shape[2], :]
         return x.reshape(b, -1, x.shape[-1])
 
@@ -98,6 +134,8 @@ class EnhancedTransformerBlock(nn.Module):
         dropout: float = 0.1,
         use_moe: bool = False,
         num_experts: int = 4,
+        checkpoint: bool | str = False,
+        checkpoint_mlp: bool = True,
     ) -> None:
         super().__init__()
         self.norm1 = nn.LayerNorm(dim)
@@ -114,13 +152,41 @@ class EnhancedTransformerBlock(nn.Module):
                 nn.Dropout(dropout),
             )
         self.drop_path = StochasticDepth(dropout) if dropout > 0 else nn.Identity()
+        self.checkpoint = checkpoint
+        self.checkpoint_mlp = checkpoint_mlp
+
+    def _should_checkpoint(self) -> bool:
+        if self.checkpoint == "auto":
+            if torch.cuda.is_available():
+                free, total = torch.cuda.mem_get_info()
+                return free / total < 0.5
+            return False
+        return bool(self.checkpoint)
 
     def forward(self, x: torch.Tensor, prev_layer: Optional[torch.Tensor] = None) -> torch.Tensor:
-        attn_out = self.attn(self.norm1(x))
+        use_ckpt = self._should_checkpoint()
+
+        def attn_fn(t: torch.Tensor) -> torch.Tensor:
+            return self.attn(self.norm1(t))
+
+        if use_ckpt:
+            attn_out = torch.utils.checkpoint.checkpoint(attn_fn, x)
+        else:
+            attn_out = attn_fn(x)
+
         if prev_layer is not None:
             attn_out = attn_out + 0.1 * prev_layer
         x = x + self.drop_path(attn_out)
-        x = x + self.drop_path(self.mlp(self.norm2(x)))
+
+        def mlp_fn(t: torch.Tensor) -> torch.Tensor:
+            return self.mlp(self.norm2(t))
+
+        if use_ckpt and self.checkpoint_mlp:
+            mlp_out = torch.utils.checkpoint.checkpoint(mlp_fn, x)
+        else:
+            mlp_out = mlp_fn(x)
+
+        x = x + self.drop_path(mlp_out)
         return x
 
 

@@ -12,3 +12,9 @@
 - Implemented full training/evaluation CLI with checkpointing and metrics.
 - Added DICOM data loading with preprocessing and metadata handling.
 - Replaced placeholder transformer block and KAN layer with production-ready versions.
+- Optimized cube splitting with vectorised extraction, adaptive batching and
+  overlap-aware reconstruction.
+- Implemented efficient differential feature extraction with Sobel gradients
+  and caching.
+- Added adaptive cube embedding, memory-aware chunking and gradient
+  checkpointing options in transformer blocks.
