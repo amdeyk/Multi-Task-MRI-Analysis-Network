@@ -26,6 +26,10 @@ class TrainingConfig:
     """Training configuration"""
 
     batch_size: int = 8
+    adaptive_batch: bool = False
+    min_batch_size: int = 1
+    max_batch_size: int = 8
+    batch_size_schedule: Optional[List[int]] = None
     learning_rate: float = 1e-4
     weight_decay: float = 1e-5
     epochs: int = 100
