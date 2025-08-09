@@ -25,3 +25,9 @@
   logging, data validation utilities and model serving scaffolding.
 - Added comprehensive medical imaging data pipeline with DICOM/NIfTI support,
   preprocessing pipelines and metadata management.
+- Added distributed training utilities with automatic multi-GPU configuration
+  and CLI integration.
+- Implemented adaptive mixed precision training with overflow detection and
+  memory logging.
+- Replaced cube embedding with a sliding-window patch processor capable of
+  distributed volume handling.

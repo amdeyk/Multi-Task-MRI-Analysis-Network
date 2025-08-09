@@ -23,6 +23,8 @@ class Trainer:
     optimizer: torch.optim.Optimizer
     device: torch.device
     scaler: Optional[torch.cuda.amp.GradScaler] = None
+    amp: bool = False
+    amp_dtype: torch.dtype = torch.float16
     scheduler: Optional[torch.optim.lr_scheduler._LRScheduler] = None
     clip_grad: float = 0.0
     tracker: Optional[ExperimentTracker] = None
@@ -30,6 +32,8 @@ class Trainer:
     def __post_init__(self) -> None:
         self.logger = logging.getLogger(__name__)
         self.model.to(self.device)
+        if self.amp and self.scaler is None and torch.cuda.is_available():
+            self.scaler = torch.cuda.amp.GradScaler()
 
     def _forward(self, batch: Dict[str, Tensor]) -> Dict[str, Tensor]:
         mri = batch["mri"].to(self.device)
@@ -39,31 +43,39 @@ class Trainer:
         self.model.train()
         self.optimizer.zero_grad(set_to_none=True)
         targets = {k: v.to(self.device) for k, v in batch.items() if k != "mri"}
-        with torch.cuda.amp.autocast(enabled=self.scaler is not None):
+        with torch.cuda.amp.autocast(enabled=self.amp, dtype=self.amp_dtype):
             outputs = self._forward(batch)
             losses = self.loss_fn(outputs, targets)
             loss = losses["total"]
         if self.scaler is not None:
+            prev_scale = self.scaler.get_scale()
             self.scaler.scale(loss).backward()
             if self.clip_grad > 0:
                 self.scaler.unscale_(self.optimizer)
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.clip_grad)
             self.scaler.step(self.optimizer)
             self.scaler.update()
+            if self.scaler.get_scale() < prev_scale:
+                self.logger.warning("Gradient overflow detected, reducing loss scale")
         else:
             loss.backward()
             if self.clip_grad > 0:
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.clip_grad)
             self.optimizer.step()
+        if torch.cuda.is_available():  # pragma: no cover - device specific
+            self.logger.debug(
+                "mem_allocated=%d", torch.cuda.memory_allocated(self.device)
+            )
         return float(loss.detach())
 
     @torch.no_grad()
     def validate_step(self, batch: Dict[str, Tensor]) -> Dict[str, float]:
         self.model.eval()
-        outputs = self._forward(batch)
+        with torch.cuda.amp.autocast(enabled=self.amp, dtype=self.amp_dtype):
+            outputs = self._forward(batch)
         targets = {k: v.to(self.device) for k, v in batch.items() if k != "mri"}
         losses = self.loss_fn(outputs, targets)
-        pred = outputs["segmentation"].argmax(dim=1)
+        pred = outputs["segmentation"].argmax(dim=1).float()
         dice = self._dice_coefficient(pred, targets["seg"].long())
         return {"loss": float(losses["total"]), "dice": float(dice)}
 
@@ -119,6 +131,11 @@ class TrainingManager:
             self.tracker.finish()
 
     def _train_epoch(self, epoch: int) -> float:
+        if hasattr(self.train_loader, "sampler") and isinstance(
+            self.train_loader.sampler, torch.utils.data.distributed.DistributedSampler
+        ):
+            self.train_loader.sampler.set_epoch(epoch)
+
         losses = []
         for batch in self.train_loader:
             try:

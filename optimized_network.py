@@ -11,8 +11,14 @@ from attention import FlashAttention
 from shape_utils import ensure_bcdhw
 
 
-class OptimizedCubeEmbedding(nn.Module):
-    """3D cube embedding with adaptive batching and overlap handling."""
+class AdaptivePatchEmbedding(nn.Module):
+    """Memory-aware 3D patch embedding with sliding convolutions.
+
+    The module replaces earlier cube-based extraction with a sliding window
+    approach built on ``nn.Conv3d``.  Volumes are processed in depth chunks
+    to fit available memory and, when distributed training is initialised,
+    slices are divided across ranks and gathered after embedding.
+    """
 
     def __init__(
         self,
@@ -46,7 +52,7 @@ class OptimizedCubeEmbedding(nn.Module):
         return int(1e12)
 
     def _apply_layer(self, layer: nn.Module, x: torch.Tensor) -> torch.Tensor:
-        """Apply convolution in depth chunks based on free memory."""
+        """Apply ``layer`` to ``x`` in depth chunks based on free memory."""
 
         b, c, d, h, w = x.shape
         device = x.device
@@ -54,7 +60,7 @@ class OptimizedCubeEmbedding(nn.Module):
         free_mem = self._free_mem(device) * 0.8
         max_depth = max(1, int(free_mem / (bytes_per_voxel * h * w * b)))
 
-        outputs = []
+        outputs: list[torch.Tensor] = []
         for start in range(0, d, max_depth):
             chunk = x[:, :, start : start + max_depth]
             out = layer(chunk)
@@ -62,15 +68,29 @@ class OptimizedCubeEmbedding(nn.Module):
         return torch.cat(outputs, dim=2)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        import torch.distributed as dist
+
         x = ensure_bcdhw(x, "x")
         b, c, d, h, w = x.shape
         pad = self.cube_size - self.stride
         if pad > 0:
             x = F.pad(x, (0, pad, 0, pad, 0, pad))
 
+        if dist.is_initialized():
+            world = dist.get_world_size()
+            rank = dist.get_rank()
+            chunk = (d + world - 1) // world
+            start = rank * chunk
+            end = min(start + chunk, d)
+            x_local = x[:, :, start:end]
+            if end - start < chunk:
+                x_local = F.pad(x_local, (0, 0, 0, 0, 0, chunk - (end - start)))
+        else:
+            x_local = x
+
         feats = []
         for layer in self.embeddings:
-            emb = self._apply_layer(layer, x.reshape(b * c, 1, x.shape[2], x.shape[3], x.shape[4]))
+            emb = self._apply_layer(layer, x_local.reshape(b * c, 1, x_local.shape[2], x_local.shape[3], x_local.shape[4]))
             emb = rearrange(emb, "(b c) e d h w -> b c (d h w) e", b=b, c=c)
             feats.append(emb)
 
@@ -83,12 +103,26 @@ class OptimizedCubeEmbedding(nn.Module):
                         emb.transpose(-1, -2), size=target, mode="linear"
                     ).transpose(-1, -2)
                 aligned.append(emb)
-            x = torch.cat(aligned, dim=-1)
+            out = torch.cat(aligned, dim=-1)
         else:
-            x = feats[0]
+            out = feats[0]
 
-        x = x + self.pos_embed[:, : x.shape[2], :]
-        return x.reshape(b, -1, x.shape[-1])
+        if dist.is_initialized():
+            gather_list = [torch.zeros_like(out) for _ in range(dist.get_world_size())]
+            dist.all_gather(gather_list, out)
+            out = torch.cat(gather_list, dim=2)
+            d_tokens = (d + pad - self.cube_size) // self.stride + 1
+            h_tokens = (h + pad - self.cube_size) // self.stride + 1
+            w_tokens = (w + pad - self.cube_size) // self.stride + 1
+            tokens = d_tokens * h_tokens * w_tokens
+            out = out[:, :, :tokens]
+
+        out = out + self.pos_embed[:, : out.shape[2], :]
+        return out.reshape(b, -1, out.shape[-1])
+
+
+# Backwards compatibility
+OptimizedCubeEmbedding = AdaptivePatchEmbedding
 
 
 class MixtureOfExperts(nn.Module):
