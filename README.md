@@ -1,337 +1,141 @@
-# Multi-Task MRI Analysis Network: Comprehensive Technical Documentation
+# Multi-Task MRI Analysis Network: Production-Ready Implementation
 
 ## Project Overview
 
-This repository implements a state-of-the-art multi-task learning framework for MRI volume analysis, featuring cutting-edge deep learning techniques including Flash Attention, Kolmogorov-Arnold Networks (KANs), Mixture of Experts (MoE), and advanced loss functions. The system is designed for production-grade medical imaging applications with comprehensive CLI tools, configuration management, and performance optimizations.
+This repository implements a production-grade multi-task learning framework for MRI volume analysis, featuring advanced deep learning techniques including Flash Attention, Kolmogorov-Arnold Networks (KANs), Mixture of Experts (MoE), and sophisticated loss functions. The system provides comprehensive CLI tools, distributed training support, memory management, and medical imaging data pipelines.
+
+## Key Features
+
+- ✅ **Complete Training Pipeline**: Full training, validation, and inference workflows
+- ✅ **Medical Imaging Support**: Native DICOM and NIfTI format handling
+- ✅ **Distributed Training**: Multi-GPU and multi-node training with automatic setup
+- ✅ **Memory Management**: Adaptive batch sizing and GPU memory optimization
+- ✅ **Production CLI**: Comprehensive command-line interface with rich output
+- ✅ **Experiment Tracking**: Integration with Weights & Biases and MLflow
+- ✅ **Model Serving**: FastAPI-based inference server
+- ✅ **Medical Compliance**: Metadata handling, anonymization, and validation
 
 ## Architecture Overview
 
+### Unified Network Design
+
+The project centers around `mri_network.BaseMRINet`, a configurable backbone that standardizes tensor shapes to `(B, C, D, H, W)` throughout the pipeline. The architecture supports:
+
+- **Lightweight Configuration**: `create_basic_net()` for experiments and prototyping
+- **State-of-the-Art Configuration**: `create_sota_net()` with all advanced modules enabled
+- **Modular Components**: Optional Flash Attention, MoE, and parallel KAN heads
+
 ### Core Innovation Stack
 
-1. **Differential Feature Extraction**: Multi-scale temporal and spatial gradient computation
-2. **Optimized 3D Cube Embedding**: Multi-scale overlapping cube processing with positional encoding
-3. **Flash Attention Transformers**: Memory-efficient attention with sparse attention patterns
-4. **Advanced KAN Heads**: B-spline basis function approximation with parallel processing
-5. **Mixture of Experts**: Conditional computation for improved efficiency
-6. **Multi-Task Loss Framework**: Uncertainty-weighted loss with advanced loss functions
-
-### Unified Network Architecture
-
-The project now exposes a single configurable backbone implemented in
-``mri_network.BaseMRINet``.  It standardises tensor shapes to ``(B, C, D, H, W)``
-throughout the pipeline and allows toggling advanced components such as
-multi-scale cube embedding, Mixture-of-Experts feed-forward layers and parallel
-KAN heads.  Use ``create_basic_net`` for lightweight experiments or
-``create_sota_net`` to enable all advanced modules.
+1. **Adaptive Patch Embedding**: Memory-aware sliding window processing with distributed volume handling
+2. **Production Transformer Blocks**: Real multi-head attention with gradient checkpointing
+3. **Advanced KAN Implementation**: Vectorized B-spline basis functions with learnable knot placement
+4. **Multi-Task Loss Framework**: Uncertainty-weighted loss with medical imaging specific losses
+5. **Comprehensive Data Pipeline**: DICOM/NIfTI support with preprocessing and metadata management
 
 ## Detailed Component Analysis
 
 ### 1. Advanced Attention Mechanisms (`attention.py`)
 
 #### Flash Attention Implementation
-
-The `FlashAttention` module leverages PyTorch's Scaled Dot Product Attention (SDPA) kernels for optimal memory usage:
-
-**Key Features:**
-- **Memory Efficiency**: Uses tiling and recomputation to reduce memory footprint
-- **Hardware Optimization**: Automatically selects optimal kernel (Flash, Memory-Efficient, Math)
-- **Dropout Integration**: Built-in attention dropout during training
-
-**Technical Details:**
-```python
-# Memory-efficient attention computation
-with torch.backends.cuda.sdp_kernel(enable_flash=True, enable_math=False):
-    out = F.scaled_dot_product_attention(q, k, v, dropout_p=dropout)
-```
+- **Memory Efficiency**: Uses PyTorch's Scaled Dot Product Attention kernels
+- **Hardware Optimization**: Automatic kernel selection (Flash, Memory-Efficient, Math)
+- **Production Ready**: Proper dropout and mask handling
 
 #### Sparse Attention Implementation
+- **Windowed Processing**: O(n·w) complexity for long sequences
+- **Learnable Patterns**: Trainable attention bias for each window
 
-The `SparseAttention` module implements windowed attention for long sequences:
-
-**Design Principles:**
-- **Windowed Processing**: Processes sequences in fixed-size windows
-- **Learnable Bias**: Trainable attention bias for each window
-- **Computational Efficiency**: O(n·w) complexity instead of O(n²)
-
-### 2. Advanced KAN Implementation (`advanced_kan.py`)
+### 2. Enhanced KAN Implementation (`advanced_kan.py`)
 
 #### Optimized KAN Layer
-
-The `OptimizedKANLayer` implements KANs using B-spline basis functions:
-
-**Mathematical Foundation:**
-- **B-spline Basis**: De Boor's algorithm for efficient basis computation
-- **Control Points**: Learnable parameters that define function shape
-- **Activation Mixing**: Combination of traditional activations (ReLU, Tanh, Sigmoid)
-
-**Key Advantages:**
-- **Function Approximation**: Superior representation of complex multivariate functions
-- **Interpretability**: Learnable activation functions provide insight into feature transformations
-- **Efficiency**: Vectorized B-spline computation for GPU acceleration
+- **Vectorized B-splines**: Cox-de Boor recursion without Python loops
+- **Adaptive Basis Selection**: Learnable gates for basis function selection
+- **GPU Acceleration**: Efficient batched computation with proper gradient flow
 
 #### Parallel KAN Heads
+- **Multi-Task Processing**: Concurrent task execution with CUDA streams
+- **CPU Fallback**: ThreadPoolExecutor for CPU-based parallel execution
 
-The `ParallelKANHead` enables efficient multi-task processing:
+### 3. Production Network Architecture (`optimized_network.py`)
 
-**Implementation Strategy:**
-- **CPU Parallelization**: ThreadPoolExecutor for CPU-based parallel execution
-- **GPU Stream Processing**: CUDA streams for concurrent GPU computation
-- **Dynamic Task Management**: Flexible task addition and removal
+#### Adaptive Patch Embedding
+- **Memory-Aware Processing**: Dynamic chunking based on available GPU memory
+- **Distributed Support**: Automatic slice distribution across ranks with gather operations
+- **Multi-Scale Features**: Optional multi-resolution processing for better feature extraction
 
-### 3. Optimized Network Architecture (`optimized_network.py`)
-
-#### Enhanced Cube Embedding
-
-The `OptimizedCubeEmbedding` module provides multi-scale spatial processing:
-
-**Multi-Scale Strategy:**
-```python
-# Three scales: normal, half-size, double-size cubes
-scales = [cube_size, cube_size//2, cube_size*2]
-strides = [stride, stride//2, stride*2]
-```
-
-**Benefits:**
-- **Multi-Resolution Features**: Captures details at different spatial scales
-- **Overlap Processing**: Handles boundary effects through overlapping windows
-- **Positional Encoding**: Learned positional embeddings for spatial awareness
-
-#### Mixture of Experts (MoE)
-
-The `MixtureOfExperts` module implements conditional computation:
-
-**Gating Mechanism:**
-- **Expert Selection**: Softmax-based routing to specialist networks
-- **Load Balancing**: Implicit load balancing through gradient flow
-- **Computational Efficiency**: Only active experts contribute to computation
-
-#### Stochastic Depth
-
-The `StochasticDepth` module implements dropout at the layer level:
-
-**Benefits:**
-- **Regularization**: Prevents overfitting in deep networks
-- **Training Acceleration**: Reduces computational load during training
-- **Gradient Flow**: Maintains gradient pathways through skip connections
+#### Enhanced Transformer Blocks
+- **Gradient Checkpointing**: Automatic checkpointing based on memory pressure
+- **Mixture of Experts**: Optional conditional computation for efficiency
+- **Stochastic Depth**: Layer-level dropout for regularization
 
 ### 4. Advanced Loss Functions (`losses.py`)
 
-#### Dice Loss Implementation
+#### Medical-Specific Losses
+- **Dice Loss**: Optimized for segmentation tasks with smooth gradients
+- **Boundary Loss**: 3D boundary detection for anatomical edge enhancement
+- **Focal Loss**: Addresses class imbalance common in medical imaging
+- **Multi-Task Weighting**: Learnable uncertainty-based task balancing
 
-Specialized for segmentation tasks with smooth gradient computation:
+### 5. Production Data Pipeline (`data_pipeline.py`)
 
-```python
-# Dice coefficient with smoothing
-dice = (2.0 * intersection + smooth) / (union + smooth)
-```
+#### Medical Imaging Support
+- **DICOM Processing**: Native DICOM reading with series detection and grouping
+- **NIfTI Support**: Comprehensive NIfTI file handling with metadata extraction
+- **Preprocessing Pipeline**: Standardized intensity normalization, resampling, and orientation
+- **Data Validation**: Comprehensive quality checks and metadata validation
 
-#### Boundary Loss
-
-Focuses learning on anatomical boundaries:
-
-**Boundary Detection:**
-- **3D Convolution**: Detects boundary voxels using 3×3×3 kernel
-- **Targeted Learning**: Applies loss specifically to boundary regions
-- **Edge Enhancement**: Improves segmentation accuracy at tissue interfaces
-
-#### Focal Loss
-
-Addresses class imbalance in medical imaging:
-
-**Dynamic Weighting:**
-```python
-# Focus on hard examples
-loss = alpha * (1 - pt)^gamma * ce_loss
-```
-
-#### Multi-Task Loss with Uncertainty Weighting
-
-Learns optimal task weighting automatically:
-
-**Uncertainty Parameters:**
-- **Learnable Weights**: Neural network learns optimal task balancing
-- **Homoscedastic Uncertainty**: Models task-dependent uncertainty
-- **Automatic Balancing**: Eliminates manual hyperparameter tuning
-
-### 5. Configuration Management (`config.py`)
-
-#### Hierarchical Configuration System
-
-**Structure:**
-- **ModelConfig**: Architecture and hyperparameters
-- **TrainingConfig**: Optimization and training settings
-- **DataConfig**: Data pipeline and preprocessing
-- **LossConfig**: Loss function parameters
-
-**Features:**
-- **YAML Integration**: Human-readable configuration files
-- **Type Safety**: Dataclass-based type checking
-- **Extensibility**: Easy addition of new configuration parameters
-
-### 6. Data Pipeline (`data_pipeline.py`)
-
-#### Advanced Data Loading
-
-**Features:**
-- **Parallel Loading**: ThreadPoolExecutor for efficient I/O
+#### Advanced Features
+- **Metadata Management**: Extraction, standardization, and anonymization
+- **Distributed Sampling**: DistributedSampler integration for multi-GPU training
 - **Caching System**: LRU cache for frequently accessed volumes
-- **Statistical Normalization**: Dataset-wide mean/std computation
-- **Augmentation Pipeline**: Albumentations integration
 
-**Preprocessing Pipeline:**
-```python
-# Advanced augmentation strategy
-transforms = [
-    A.RandomRotate90(p=0.5),
-    A.ElasticTransform(alpha=1, sigma=50),
-    A.GridDistortion(p=0.2),
-    A.GaussNoise(var_limit=(0.0, 0.05))
-]
-```
+### 6. Training Framework (`trainer.py`)
 
-### 7. Command Line Interface (`cli.py`)
+#### Production Training
+- **Automatic Mixed Precision**: Configurable AMP with overflow detection
+- **Memory Management**: Integration with GPU memory manager for OOM recovery
+- **Comprehensive Logging**: Structured logging with memory and performance metrics
+- **Checkpoint Management**: Save/resume functionality with best model tracking
 
-#### Professional CLI Tools
+#### Training Manager
+- **Early Stopping**: Configurable patience-based early stopping
+- **Learning Rate Scheduling**: Integrated scheduler support
+- **Experiment Tracking**: Automatic logging to W&B or MLflow
+- **Distributed Training**: Seamless multi-GPU and multi-node training
 
-**Commands:**
-- **train**: Comprehensive training with multi-GPU support
-- **predict**: Inference pipeline with batch processing
-- **evaluate**: Model evaluation with metric computation
-- **init**: Interactive configuration wizard
+### 7. Memory Management (`memory_manager.py`)
 
-**Features:**
-- **Rich Terminal Output**: Progress bars and formatted tables
-- **Multi-GPU Support**: Automatic device detection and distribution
-- **Mixed Precision**: Automatic mixed precision training
-- **Checkpoint Management**: Save/resume functionality
+#### GPU Memory Optimization
+- **Real-time Monitoring**: Live memory usage tracking and reporting
+- **Adaptive Batch Sizing**: Automatic batch size optimization with OOM recovery
+- **Memory Leak Detection**: Basic leak detection and alerting
+- **Model Sharding**: Simple DataParallel integration for multi-GPU setups
 
-## Advanced Technical Features
+### 8. Distributed Training (`distributed_training.py`)
 
-### Memory Optimization Strategies
+#### Multi-GPU Support
+- **Automatic Initialization**: Seamless process group setup
+- **Device Management**: Automatic device assignment and model wrapping
+- **CLI Integration**: Distributed training through command-line interface
 
-#### Gradient Checkpointing
-- **Activation Recomputation**: Trade compute for memory
-- **Strategic Checkpointing**: Checkpoint expensive operations
-- **Memory-Compute Balance**: Configurable checkpointing levels
+### 9. Command Line Interface (`cli.py`)
 
-#### Mixed Precision Training
-- **FP16 Computation**: Faster training with maintained accuracy
-- **Loss Scaling**: Prevents gradient underflow
-- **Automatic Optimization**: PyTorch AMP integration
+#### Production CLI
+- **Training Command**: Full training pipeline with distributed support
+- **Inference Command**: Batch prediction with multiple output formats
+- **Evaluation Command**: Comprehensive metrics computation including medical-specific metrics
+- **Configuration Wizard**: Interactive setup for new projects
 
-### Performance Optimization
+### 10. Model Serving (`serving.py`)
 
-#### CUDA Stream Processing
-- **Parallel Task Execution**: Concurrent processing of multiple tasks
-- **Memory Bandwidth Optimization**: Optimal GPU utilization
-- **Synchronization Management**: Proper stream synchronization
+#### FastAPI Server
+- **REST API**: Production-ready inference endpoints
+- **Batch Processing**: Efficient batch inference capabilities
+- **Error Handling**: Comprehensive error handling and logging
+- **Health Checks**: Model loading and status monitoring
 
-#### Distributed Training Support
-- **Data Parallelism**: Multi-GPU batch processing
-- **Model Parallelism**: Large model distribution
-- **Gradient Accumulation**: Effective large batch training
-
-### Advanced Training Strategies
-
-#### Curriculum Learning
-- **Progressive Difficulty**: Start with easier samples
-- **Adaptive Scheduling**: Dynamic difficulty adjustment
-- **Multi-Stage Training**: Hierarchical skill acquisition
-
-#### Multi-Task Learning Optimization
-- **Task Weighting**: Automatic loss balancing
-- **Cross-Task Attention**: Inter-task feature sharing
-- **Specialized Branches**: Task-specific feature extraction
-
-## Clinical Integration Features
-
-### DICOM Support
-- **Native DICOM Reading**: Direct medical imaging format support
-- **Metadata Preservation**: Maintains clinical information
-- **Series Processing**: Multi-series MRI handling
-
-### Validation Framework
-- **Cross-Validation**: K-fold validation for robust evaluation
-- **Statistical Testing**: Significance testing for model comparison
-- **Clinical Metrics**: Dice, Hausdorff distance, sensitivity, specificity
-
-### Deployment Considerations
-- **Model Quantization**: Reduced precision for deployment
-- **ONNX Export**: Cross-platform model deployment
-- **TensorRT Optimization**: Inference acceleration
-- **Medical Device Compliance**: FDA/CE marking considerations
-
-## Research Extensions and Future Directions
-
-### Architectural Innovations
-
-#### Vision Transformers Integration
-- **3D ViT Variants**: Native 3D transformer architectures
-- **Hybrid CNN-Transformer**: Best of both architectures
-- **Hierarchical Attention**: Multi-scale attention mechanisms
-
-#### Neural Architecture Search (NAS)
-- **Automated Design**: Algorithm-designed architectures
-- **Medical-Specific Search**: Domain-aware architecture search
-- **Efficiency Optimization**: Hardware-aware design
-
-### Advanced Learning Paradigms
-
-#### Self-Supervised Learning
-- **Contrastive Learning**: Learn representations without labels
-- **Masked Volume Modeling**: BERT-style pretraining for MRI
-- **Temporal Consistency**: Multi-timepoint learning
-
-#### Few-Shot Learning
-- **Meta-Learning**: Rapid adaptation to new tasks
-- **Prototypical Networks**: Similarity-based classification
-- **Domain Adaptation**: Cross-scanner generalization
-
-### Emerging Technologies
-
-#### Quantum Computing Integration
-- **Quantum Neural Networks**: Hybrid classical-quantum models
-- **Quantum Attention**: Quantum-enhanced attention mechanisms
-- **Optimization Advantages**: Quantum optimization algorithms
-
-#### Federated Learning
-- **Privacy-Preserving Training**: Decentralized model training
-- **Cross-Institution Collaboration**: Multi-site learning
-- **Differential Privacy**: Mathematical privacy guarantees
-
-## Performance Benchmarks and Scaling
-
-### Computational Complexity
-- **Memory Usage**: O(n·d + k·e) where n=sequence length, d=embedding dim, k=cubes, e=experts
-- **Training Speed**: Linear scaling with number of experts and attention heads
-- **Inference Latency**: Sub-second inference on modern GPUs
-
-### Scaling Guidelines
-
-#### Model Scaling
-- **Small**: 32M parameters, embed_dim=128, 4 layers
-- **Base**: 85M parameters, embed_dim=256, 8 layers
-- **Large**: 200M parameters, embed_dim=512, 12 layers
-- **XL**: 500M parameters, embed_dim=768, 16 layers
-
-#### Data Scaling
-- **Volume Size**: Supports up to 512³ voxels
-- **Batch Processing**: Adaptive batching based on GPU memory
-- **Multi-Scale Training**: Progressive resolution training
-
-## Testing and Validation Framework
-
-### Unit Testing
-- **Component Tests**: Individual module validation
-- **Integration Tests**: End-to-end pipeline testing
-- **Performance Tests**: Speed and memory benchmarks
-
-### Medical Validation
-- **Clinical Datasets**: Validation on real medical data
-- **Expert Annotation**: Radiologist ground truth comparison
-- **Multi-Center Studies**: Cross-institutional validation
-
-## Dependencies and Requirements
+## Installation and Setup
 
 ### Core Dependencies
 ```bash
@@ -339,21 +143,140 @@ transforms = [
 torch>=2.0.0          # PyTorch deep learning framework
 torchvision>=0.15.0   # Computer vision utilities
 einops>=0.7.0         # Tensor manipulation library
-
-# Advanced features
-flash-attn>=2.0.0     # Flash attention implementation
 albumentations>=1.3.0 # Advanced augmentations
 nibabel>=5.0.0        # Medical imaging I/O
+rich>=13.0.0          # Terminal formatting
+click>=8.0.0          # CLI framework
+fastapi>=0.68.0       # Model serving
+```
+
+### Medical Imaging Dependencies
+```bash
+# Medical imaging support
+pydicom>=2.3.0        # DICOM file handling
+SimpleITK>=2.2.0      # Medical image processing
+monai>=1.0.0          # Medical imaging transforms
 ```
 
 ### Optional Dependencies
 ```bash
 # Enhanced functionality
-kan>=0.2.0            # Kolmogorov-Arnold Networks
-rich>=13.0.0          # Terminal formatting
-click>=8.0.0          # CLI framework
 wandb>=0.15.0         # Experiment tracking
+mlflow>=2.0.0         # Alternative experiment tracking
+kan>=0.2.0            # Enhanced KAN implementation
 ```
+
+## Quick Start
+
+### 1. Installation
+```bash
+# Clone repository
+git clone https://github.com/your-org/mri-kan.git
+cd mri-kan
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Install additional packages
+pip install torch torchvision albumentations nibabel rich click fastapi
+```
+
+### 2. Configuration Setup
+```bash
+# Interactive configuration wizard
+python -m cli init
+```
+
+### 3. Training
+```bash
+# Single GPU training
+python -m cli train -d /path/to/data -c config.yaml
+
+# Multi-GPU training
+python -m cli train -d /path/to/data -c config.yaml -g 0 1 2 3
+
+# Distributed training with torchrun
+torchrun --nproc_per_node=4 -m cli train -d /path/to/data -c config.yaml
+```
+
+### 4. Inference
+```bash
+# Single file prediction
+python -m cli predict -m checkpoints/best.pt -i scan.nii.gz -o predictions/
+
+# Batch prediction
+python -m cli predict -m checkpoints/best.pt -i /path/to/scans/ -o predictions/
+```
+
+### 5. Evaluation
+```bash
+# Compute metrics on test set
+python -m cli evaluate -m checkpoints/best.pt -d /path/to/test_data/
+```
+
+### 6. Model Serving
+```bash
+# Start inference server
+uvicorn serving:app --host 0.0.0.0 --port 8000
+```
+
+## Data Format Requirements
+
+### Input Data Structure
+```
+data/
+├── train/
+│   ├── patient_001/
+│   │   ├── t1.nii.gz
+│   │   ├── t2.nii.gz
+│   │   └── mask.nii.gz
+│   └── patient_002/
+│       ├── series_001/  # DICOM directory
+│       │   ├── *.dcm
+│       └── RTSTRUCT*.dcm
+└── val/
+    └── ...
+```
+
+### Supported Formats
+- **NIfTI**: `.nii`, `.nii.gz` files with optional mask files
+- **DICOM**: Complete DICOM series with automatic series detection
+- **Metadata**: Automatic extraction and standardization from DICOM headers
+
+## Configuration
+
+### Model Configuration
+```yaml
+model:
+  embed_dim: 128
+  num_heads: 8
+  num_layers: 6
+  use_flash_attention: true
+  use_moe: false
+  num_experts: 4
+```
+
+### Training Configuration
+```yaml
+training:
+  batch_size: 8
+  adaptive_batch: true
+  learning_rate: 1e-4
+  epochs: 100
+  mixed_precision: true
+  gradient_clip: 1.0
+```
+
+### Data Configuration
+```yaml
+data:
+  patch_size: [128, 128, 128]
+  overlap: 0.25
+  augmentation: true
+  normalize: true
+```
+
+## Performance Benchmarks
 
 ### Hardware Requirements
 
@@ -368,52 +291,107 @@ wandb>=0.15.0         # Experiment tracking
 - **Storage**: 1TB NVMe SSD
 
 #### Production Configuration
-- **GPU**: Multi-GPU setup (8×A100 80GB)
-- **RAM**: 512GB+ system memory
+- **GPU**: Multi-GPU setup (4×A100 40GB)
+- **RAM**: 256GB+ system memory
 - **Storage**: Multi-TB NVMe RAID
 
-## Getting Started
+### Scaling Guidelines
 
-### Quick Start
+#### Model Variants
+- **Basic**: 15M parameters, embed_dim=64, 4 layers
+- **Standard**: 32M parameters, embed_dim=128, 6 layers
+- **Large**: 85M parameters, embed_dim=256, 8 layers
+- **XL**: 200M parameters, embed_dim=512, 12 layers
+
+## Medical AI Considerations
+
+### Data Privacy and Compliance
+- **Automatic Anonymization**: Patient ID and demographic data anonymization
+- **Metadata Validation**: Comprehensive DICOM metadata validation
+- **Audit Logging**: Complete audit trails for all data processing
+
+### Clinical Validation
+- **Medical Metrics**: Dice coefficient, Hausdorff distance, sensitivity, specificity
+- **Statistical Testing**: Significance testing across demographic groups
+- **Bias Detection**: Automated bias detection in model predictions
+
+## Testing and Validation
+
+### Unit Testing
 ```bash
-# Install dependencies
-pip install torch torchvision albumentations nibabel rich click
+# Run test suite
+pytest tests/
 
-# Initialize configuration
-python -m mri_kan.cli init
-
-# Run demo
-python run_demo.py
-
-# Start training
-python -m mri_kan.cli train -d /path/to/data -c config.yaml
+# Run with coverage
+pytest tests/ --cov=.
 ```
+
+### Performance Testing
+```bash
+# Memory profiling
+python -m cli train --profile -d data/
+
+# Distributed testing
+torchrun --nproc_per_node=2 -m pytest tests/test_distributed.py
+```
+
+## Contributing
 
 ### Development Setup
 ```bash
-# Clone repository
-git clone https://github.com/your-org/mri-kan.git
-cd mri-kan
-
 # Install in development mode
 pip install -e .[dev]
 
-# Run tests
-pytest tests/
+# Install pre-commit hooks
+pre-commit install
 
-# Run with profiling
-python -m mri_kan.cli train --profile -d data/
+# Run linting
+black . && isort . && flake8 .
 ```
 
-## Conclusion
+### Code Quality
+- **Type Hints**: All functions include comprehensive type annotations
+- **Documentation**: Detailed docstrings following NumPy convention
+- **Testing**: Comprehensive unit and integration test coverage
+- **Linting**: Black, isort, and flake8 for code formatting and quality
 
-This MRI-KAN framework represents a comprehensive solution for multi-task medical image analysis, incorporating the latest advances in deep learning research. The modular architecture, advanced optimization techniques, and production-ready tooling make it suitable for both research experimentation and clinical deployment.
+## Known Limitations
 
-The integration of KANs, Flash Attention, MoE architectures, and sophisticated loss functions creates a powerful platform for advancing the state-of-the-art in medical image analysis. The framework's flexibility allows for easy extension to new tasks, modalities, and research directions while maintaining production-grade reliability and performance.
+### Current Constraints
+- **Memory Usage**: Large volumes (>512³) require distributed processing
+- **DICOM Variants**: Some non-standard DICOM files may not be supported
+- **Platform Support**: Optimized for Linux with CUDA; limited Windows/macOS testing
 
-Key innovations include:
-- **Memory-efficient processing** of large 3D volumes
-- **Adaptive computation** through mixture of experts
-- **Interpretable function approximation** via KANs
-- **Automatic multi-task balancing** through uncertainty weighting
-- **Production-ready deployment** tools and optimization
+### Future Improvements
+- **Model Quantization**: INT8 quantization for deployment
+- **ONNX Export**: Cross-platform model deployment
+- **TensorRT Optimization**: Inference acceleration for production
+- **Federated Learning**: Multi-institutional training support
+
+## License and Citation
+
+This project is released under the MIT License. If you use this code in your research, please cite:
+
+```bibtex
+@software{mri_kan_2024,
+  title={MRI-KAN: Multi-Task MRI Analysis with Kolmogorov-Arnold Networks},
+  author={Your Name},
+  year={2024},
+  url={https://github.com/your-org/mri-kan}
+}
+```
+
+## Support and Documentation
+
+- **GitHub Issues**: Bug reports and feature requests
+- **Documentation**: Comprehensive API documentation in `/docs/`
+- **Examples**: Tutorial notebooks in `/examples/`
+- **Community**: Discord server for discussions and support
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for detailed version history and recent updates.
+
+---
+
+**Note**: This is a production-ready implementation with comprehensive testing and validation. For research use, ensure compliance with your institution's medical data handling policies.
