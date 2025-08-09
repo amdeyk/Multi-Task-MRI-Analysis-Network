@@ -23,3 +23,5 @@
   tensor shapes.
 - Introduced extensible training framework with experiment tracking, structured
   logging, data validation utilities and model serving scaffolding.
+- Added comprehensive medical imaging data pipeline with DICOM/NIfTI support,
+  preprocessing pipelines and metadata management.

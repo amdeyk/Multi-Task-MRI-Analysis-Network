@@ -1,19 +1,22 @@
-"""Data pipeline utilities with caching and augmentations."""
+"""Advanced data pipeline supporting medical imaging formats."""
 
-from concurrent.futures import ThreadPoolExecutor
+from __future__ import annotations
+
 from functools import lru_cache
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Dict, List, Tuple, Union
 
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
 import nibabel as nib
 import numpy as np
 import torch
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import DataLoader, Dataset
 
 from config import Config
-from data_validation import validate_dataset
+from data_validation import validate_dataset, validate_metadata
+from metadata_manager import MetadataManager
+from preprocessing import PreprocessingPipeline
 
 try:  # pragma: no cover - optional dependency
     import pydicom
@@ -25,9 +28,11 @@ try:  # pragma: no cover - optional dependency
 except Exception:  # noqa: S110
     sitk = None
 
+StudyEntry = List[Union[Path, Tuple[Path, str]]]
+
 
 class MRIDataset(Dataset):
-    """Dataset capable of reading NIfTI and DICOM studies."""
+    """Dataset capable of reading NIfTI and DICOM studies with multiple sequences."""
 
     def __init__(self, root_dir: str, transform=None, cache_size: int = 100, num_workers: int = 4) -> None:
         self.root_dir = Path(root_dir)
@@ -35,70 +40,87 @@ class MRIDataset(Dataset):
         self.num_workers = num_workers
         self._cache: Dict[str, np.ndarray] = {}
         self._cache_size = cache_size
-        self.target_spacing = (1.0, 1.0, 1.0)
 
-        self.files: list[Path] = []
-        for p in sorted(self.root_dir.iterdir()):
-            if p.is_file() and p.suffix in {".nii", ".nii.gz"}:
-                self.files.append(p)
-            elif p.is_dir() and list(p.glob("*.dcm")):
-                self.files.append(p)
+        self.preproc = PreprocessingPipeline()
+        self.meta_mgr = MetadataManager()
 
-        failed = validate_dataset(self.files)
+        self.studies: List[StudyEntry] = []
+        for study in sorted(self.root_dir.iterdir()):
+            sequences: StudyEntry = []
+            if study.is_dir():
+                for item in sorted(study.iterdir()):
+                    if item.is_file() and item.suffix in {".nii", ".nii.gz"}:
+                        sequences.append(item)
+                    elif item.is_dir() and list(item.glob("*.dcm")):
+                        sequences.extend(self._group_dicom_series(item))
+                if not sequences and list(study.glob("*.dcm")):
+                    sequences.extend(self._group_dicom_series(study))
+            elif study.is_file() and study.suffix in {".nii", ".nii.gz"}:
+                sequences.append(study)
+            elif study.is_dir() and list(study.glob("*.dcm")):
+                sequences.extend(self._group_dicom_series(study))
+            if sequences:
+                self.studies.append(sequences)
+
+        all_files = [p if isinstance(p, Path) else p[0] for seqs in self.studies for p in seqs]
+        failed = validate_dataset(all_files)
         if failed:
             raise ValueError(f"Invalid imaging files detected: {failed}")
 
-        self.compute_statistics()
+        self.mean = 0.0
+        self.std = 1.0
+
+    def _group_dicom_series(self, path: Path) -> List[Tuple[Path, str]]:
+        if sitk is None:
+            return [(path, "")]
+        reader = sitk.ImageSeriesReader()
+        ids = reader.GetGDCMSeriesIDs(str(path))
+        if not ids:
+            return [(path, "")]
+        return [(path, sid) for sid in ids]
 
     @lru_cache(maxsize=32)
-    def load_volume(self, path: Path) -> Tuple[np.ndarray, Dict]:
-        if path.suffix in {".nii", ".nii.gz"}:
-            img = nib.load(path)
+    def load_volume(self, item: Union[Path, Tuple[Path, str]]) -> Tuple[np.ndarray, Dict]:
+        if isinstance(item, tuple):
+            return self.read_dicom_series(item[0], item[1])
+        if item.suffix in {".nii", ".nii.gz"}:
+            img = nib.load(item)
             data = img.get_fdata().astype(np.float32)
-            meta: Dict = {}
-        else:
-            data, meta = self.read_dicom_series(path)
-        data = (data - self.mean) / self.std
-        return data.astype(np.float32), meta
+            meta = self.meta_mgr.extract(item)
+            data = self.preproc.preprocess_array(data, meta)
+            meta = self.meta_mgr.standardise(meta)
+            meta = self.meta_mgr.anonymise(meta)
+            return data, meta
+        return self.read_dicom_series(item, None)
 
-    def read_dicom_series(self, path: Path) -> Tuple[np.ndarray, Dict]:
-        if pydicom is None or sitk is None:  # pragma: no cover - dependency check
+    def read_dicom_series(self, path: Path, series_id: str | None) -> Tuple[np.ndarray, Dict]:
+        if pydicom is None or sitk is None:  # pragma: no cover
             raise ImportError("pydicom and SimpleITK are required for DICOM support")
         reader = sitk.ImageSeriesReader()
-        series = reader.GetGDCMSeriesFileNames(str(path))
-        reader.SetFileNames(series)
+        if series_id:
+            files = reader.GetGDCMSeriesFileNames(str(path), series_id)
+        else:
+            files = reader.GetGDCMSeriesFileNames(str(path))
+        reader.SetFileNames(files)
         img = reader.Execute()
-        img = sitk.DICOMOrient(img, "RAS")
-        if self.target_spacing is not None:
-            resampler = sitk.ResampleImageFilter()
-            resampler.SetOutputSpacing(self.target_spacing)
-            size = [
-                int(round(sz * spc / tspc))
-                for sz, spc, tspc in zip(img.GetSize(), img.GetSpacing(), self.target_spacing)
-            ]
-            resampler.SetSize(size)
-            resampler.SetInterpolator(sitk.sitkLinear)
-            resampler.SetOutputDirection(img.GetDirection())
-            resampler.SetOutputOrigin(img.GetOrigin())
-            img = resampler.Execute(img)
-        data = sitk.GetArrayFromImage(img).astype(np.float32)
-        meta: Dict = {
-            "spacing": tuple(reversed(img.GetSpacing())),
-            "origin": img.GetOrigin(),
-            "direction": img.GetDirection(),
-        }
-        ds = pydicom.dcmread(series[0])
+        array = self.preproc.preprocess_image(img)
+        meta = self.meta_mgr.extract(Path(files[0]))
         meta.update(
             {
-                "patient_id": getattr(ds, "PatientID", ""),
-                "sex": getattr(ds, "PatientSex", "U"),
-                "age": getattr(ds, "PatientAge", "0"),
-                "study_date": getattr(ds, "StudyDate", ""),
+                "spacing": tuple(reversed(img.GetSpacing())),
+                "origin": img.GetOrigin(),
+                "direction": img.GetDirection(),
             }
         )
-        return data, meta
+        meta = self.meta_mgr.standardise(meta)
+        meta = self.meta_mgr.anonymise(meta)
+        sr_files = list(path.glob("*SR*.dcm"))
+        if sr_files:
+            meta["structured_report"] = self.meta_mgr.load_structured_report(sr_files[0])
+        return array, meta
 
-    def load_mask(self, path: Path, shape: Tuple[int, ...]) -> np.ndarray:
+    def load_mask(self, item: Union[Path, Tuple[Path, str]], shape: Tuple[int, ...]) -> np.ndarray:
+        path = item[0] if isinstance(item, tuple) else item
         if path.suffix in {".nii", ".nii.gz"}:
             mask_path = path.parent / f"{path.stem}_mask.nii.gz"
             if mask_path.exists():
@@ -106,7 +128,7 @@ class MRIDataset(Dataset):
             return np.zeros(shape, dtype=np.float32)
         rt_files = list(path.glob("*RTSTRUCT*.dcm"))
         if rt_files and sitk is not None:
-            try:  # pragma: no cover - depends on dataset
+            try:  # pragma: no cover
                 rt = sitk.ReadImage(str(rt_files[0]))
                 mask = sitk.GetArrayFromImage(rt).astype(np.float32)
                 if mask.shape != shape:
@@ -116,28 +138,28 @@ class MRIDataset(Dataset):
                 return np.zeros(shape, dtype=np.float32)
         return np.zeros(shape, dtype=np.float32)
 
-    def compute_statistics(self) -> None:
-        samples = self.files[: min(100, len(self.files))]
-        volumes = []
-        for p in samples:
-            if p.suffix in {".nii", ".nii.gz"}:
-                volumes.append(nib.load(p).get_fdata())
-            elif sitk is not None and p.is_dir():
-                vol, _ = self.read_dicom_series(p)
-                volumes.append(vol)
-        self.mean = float(np.mean([v.mean() for v in volumes])) if volumes else 0.0
-        self.std = float(np.mean([v.std() for v in volumes])) if volumes else 1.0
-
     def __len__(self) -> int:
-        return len(self.files)
+        return len(self.studies)
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
-        volume, meta = self.load_volume(self.files[idx])
-        mask = self.load_mask(self.files[idx], volume.shape)
+        sequences = self.studies[idx]
+        volumes: List[np.ndarray] = []
+        meta: Dict = {}
+        for seq in sequences:
+            vol, m = self.load_volume(seq)
+            if not validate_metadata(m):
+                raise ValueError("Invalid metadata detected")
+            volumes.append(vol)
+            meta = m
+        volume = np.stack(volumes)
+        mask = self.load_mask(sequences[0], volumes[0].shape)
         if self.transform:
             augmented = self.transform(image=volume, mask=mask)
             volume = augmented["image"]
             mask = augmented["mask"]
+        meta["num_sequences"] = len(volumes)
+        if volume.ndim == 4:
+            meta["temporal_frames"] = volume.shape[1]
         return {
             "mri": torch.from_numpy(volume),
             "seg": torch.from_numpy(mask),
